@@ -2,8 +2,7 @@ version: "3.8"
 
 services:
   # ============================================================
-  # PostgreSQL AdventureWorks (siap pakai, tidak perlu init script)
-  # Source: https://github.com/chriseaton/docker-adventureworks
+  # PostgreSQL AdventureWorks
   # ============================================================
   postgres:
     image: chriseaton/adventureworks:postgres
@@ -11,7 +10,7 @@ services:
     environment:
       POSTGRES_PASSWORD: My_password1
     ports:
-      - "5433:5432"   # Port 5433 di host (sesuai instruksi original)
+      - "5433:5432"
     networks:
       - bigdata-net
     healthcheck:
@@ -27,16 +26,23 @@ services:
     image: apache/hadoop:3.3.6
     container_name: hadoop-namenode
     hostname: namenode
-    command: ["hdfs", "namenode"]
+    user: root
+    command: >
+      bash -c "
+        mkdir -p /tmp/hadoop-hadoop/dfs/name &&
+        chown -R hadoop:hadoop /tmp/hadoop-hadoop &&
+        su -s /bin/bash hadoop -c 'hdfs namenode -format -force -nonInteractive' 2>/dev/null || true &&
+        su -s /bin/bash hadoop -c 'hdfs namenode'
+      "
     environment:
-      ENSURE_NAMENODE_DIR: "/tmp/hadoop-root/dfs/name"
+      ENSURE_NAMENODE_DIR: "/tmp/hadoop-hadoop/dfs/name"
     env_file:
       - ./hadoop.env
     ports:
-      - "9870:9870"   # NameNode Web UI
-      - "9000:9000"   # HDFS RPC
+      - "9870:9870"
+      - "9000:9000"
     volumes:
-      - namenode_data:/tmp/hadoop-root/dfs/name
+      - namenode_data:/tmp/hadoop-hadoop/dfs/name
     networks:
       - bigdata-net
     healthcheck:
@@ -45,23 +51,35 @@ services:
       timeout: 10s
       retries: 5
 
+  # ============================================================
+  # Hadoop DataNode
+  # ============================================================
   datanode:
     image: apache/hadoop:3.3.6
     container_name: hadoop-datanode
     hostname: datanode
-    command: ["hdfs", "datanode"]
+    user: root
+    command: >
+      bash -c "
+        mkdir -p /tmp/hadoop-hadoop/dfs/data &&
+        chown -R hadoop:hadoop /tmp/hadoop-hadoop &&
+        su -s /bin/bash hadoop -c 'hdfs datanode'
+      "
     env_file:
       - ./hadoop.env
     ports:
       - "9864:9864"
     volumes:
-      - datanode_data:/tmp/hadoop-root/dfs/data
+      - datanode_data:/tmp/hadoop-hadoop/dfs/data
     depends_on:
       namenode:
         condition: service_healthy
     networks:
       - bigdata-net
 
+  # ============================================================
+  # YARN ResourceManager
+  # ============================================================
   resourcemanager:
     image: apache/hadoop:3.3.6
     container_name: hadoop-resourcemanager
@@ -77,6 +95,9 @@ services:
     networks:
       - bigdata-net
 
+  # ============================================================
+  # YARN NodeManager
+  # ============================================================
   nodemanager:
     image: apache/hadoop:3.3.6
     container_name: hadoop-nodemanager
@@ -90,7 +111,7 @@ services:
       - bigdata-net
 
   # ============================================================
-  # Apache Hive
+  # Apache Hive Metastore
   # ============================================================
   hive-metastore:
     image: apache/hive:3.1.3
@@ -99,7 +120,7 @@ services:
     environment:
       SERVICE_NAME: metastore
       DB_DRIVER: postgres
-      # Hive metastore pakai database postgres yang SAMA (port internal 5432)
+      HIVE_CUSTOM_CONF_DIR: /hive-custom-conf
       SERVICE_OPTS: >-
         -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
         -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/hive_metastore
@@ -114,7 +135,11 @@ services:
       - bigdata-net
     volumes:
       - ./jars/postgresql-42.7.3.jar:/opt/hive/lib/postgresql-42.7.3.jar
+      - ./hive-conf:/hive-custom-conf
 
+  # ============================================================
+  # HiveServer2
+  # ============================================================
   hiveserver2:
     image: apache/hive:3.1.3
     container_name: hiveserver2
@@ -122,6 +147,7 @@ services:
     environment:
       SERVICE_NAME: hiveserver2
       IS_RESUME: "true"
+      HIVE_CUSTOM_CONF_DIR: /hive-custom-conf
       SERVICE_OPTS: >-
         -Dhive.metastore.uris=thrift://hive-metastore:9083
     ports:
@@ -131,6 +157,8 @@ services:
       - hive-metastore
     networks:
       - bigdata-net
+    volumes:
+      - ./hive-conf:/hive-custom-conf
 
   # ============================================================
   # Apache Spark + Jupyter Notebook
@@ -151,11 +179,12 @@ services:
     networks:
       - bigdata-net
     extra_hosts:
-      # Agar bisa akses postgres di host (jika run postgres secara terpisah)
       - "host.docker.internal:host-gateway"
     depends_on:
-      - namenode
-      - hiveserver2
+      namenode:
+        condition: service_healthy
+      hiveserver2:
+        condition: service_started
 
 networks:
   bigdata-net:
